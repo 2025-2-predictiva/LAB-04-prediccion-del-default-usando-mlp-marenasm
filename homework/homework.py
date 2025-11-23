@@ -184,7 +184,7 @@ def build_pipeline() -> Pipeline:
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
+            ("cat", OneHotEncoder(handle_unknown="ignore",sparse_output=False), cat_features),
             ("scaler", StandardScaler(with_mean=True, with_std=True), num_features),
         ],
     )
