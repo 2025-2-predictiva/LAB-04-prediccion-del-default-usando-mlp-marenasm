@@ -1,5 +1,5 @@
 ipykernel
 pandas
 pytest
-scikit-learn
 xlrd
+scikit-learn==1.7.2
