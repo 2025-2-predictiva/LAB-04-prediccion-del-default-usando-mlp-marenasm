@@ -96,3 +96,224 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+import os
+import json
+import gzip
+import pickle
+from typing import Tuple, Dict, Any, List
+
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.model_selection import GridSearchCV
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.metrics import (
+    confusion_matrix,
+    balanced_accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+
+def load_data(csv_file: str) -> pd.DataFrame:
+    """Carga un CSV comprimido en zip."""
+    df = pd.read_csv(csv_file, compression="zip")
+    return df
+
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Limpia el dataset:
+    - Renombra 'default payment next month' -> 'default'
+    - Elimina 'ID'
+    - Filtra EDUCATION != 0 y MARRIAGE != 0
+    - Agrupa EDUCATION > 4 en 4 (otros)
+    """
+    df = df.copy()
+    df.rename(columns={"default payment next month": "default"}, inplace=True)
+    df.drop(columns="ID", inplace=True)
+    df = df[(df["EDUCATION"] != 0) & (df["MARRIAGE"] != 0)]
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: 4 if x > 4 else x)
+    return df
+
+
+def split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """Separa X (features) e y (target)."""
+    X = df.drop(columns="default")
+    y = df["default"]
+    return X, y
+
+
+
+def build_pipeline() -> Pipeline:
+    """
+    Crea el pipeline de clasificación:
+    - OneHotEncoder para categóricas
+    - StandardScaler para numéricas
+    - SelectKBest
+    - PCA
+    - MLPClassifier
+    """
+    cat_features = ["SEX", "EDUCATION", "MARRIAGE"]
+
+    num_features = [
+        "LIMIT_BAL",
+        "AGE",
+        "PAY_0",
+        "PAY_2",
+        "PAY_3",
+        "PAY_4",
+        "PAY_5",
+        "PAY_6",
+        "BILL_AMT1",
+        "BILL_AMT2",
+        "BILL_AMT3",
+        "BILL_AMT4",
+        "BILL_AMT5",
+        "BILL_AMT6",
+        "PAY_AMT1",
+        "PAY_AMT2",
+        "PAY_AMT3",
+        "PAY_AMT4",
+        "PAY_AMT5",
+        "PAY_AMT6",
+    ]
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
+            ("scaler", StandardScaler(with_mean=True, with_std=True), num_features),
+        ],
+    )
+
+    pipeline = Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("feature_selection", SelectKBest(score_func=f_classif)),
+            ("pca", PCA()),
+            ("classifier", MLPClassifier(max_iter=15000, random_state=17)),
+        ]
+    )
+
+    return pipeline
+
+
+def tune_hyperparameters(
+    pipeline: Pipeline,
+    x_train: pd.DataFrame,
+    y_train: pd.Series,
+    scoring: str = "balanced_accuracy",
+) -> GridSearchCV:
+    """
+    Configura y ejecuta GridSearchCV sobre el pipeline.
+    """
+    grid_search = GridSearchCV(
+        estimator=pipeline,
+        param_grid={
+            "pca__n_components": [None],
+            "feature_selection__k": [20],
+            "classifier__hidden_layer_sizes": [(50, 30, 40, 60)],
+            "classifier__alpha": [0.26],
+            "classifier__learning_rate_init": [0.001],
+        },
+        cv=10,
+        scoring=scoring,
+        n_jobs=-1,
+        verbose=2,
+    )
+
+    grid_search.fit(x_train, y_train)
+    return grid_search
+
+
+
+def compute_metrics(
+    name: str, y_true, y_pred
+) -> Dict[str, Any]:
+    """Calcula las métricas"""
+    precision = round(precision_score(y_true, y_pred), 4)
+    balanced_acc = round(balanced_accuracy_score(y_true, y_pred), 4)
+    f1 = round(f1_score(y_true, y_pred), 4)
+    recall = round(recall_score(y_true, y_pred), 4)
+
+    metrics = {
+        "type": "metrics",
+        "dataset": name,
+        "precision": precision,
+        "balanced_accuracy": balanced_acc,
+        "recall": recall,
+        "f1_score": f1,
+    }
+    return metrics
+
+
+def compute_confusion(
+    name: str, y_true, y_pred
+) -> Dict[str, Any]:
+    """Devuelve la matriz de confusión"""
+    cm = confusion_matrix(y_true, y_pred)
+    return {
+        "type": "cm_matrix",
+        "dataset": name,
+        "true_0": {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])},
+        "true_1": {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])},
+    }
+
+
+
+def save_model(estimator, path: str = "files/models/model.pkl.gz") -> None:
+    """Guarda el modelo comprimido con gzip."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with gzip.open(path, "wb") as f:
+        pickle.dump(estimator, f)
+
+
+def save_metrics(results: List[Dict[str, Any]], path: str = "files/output/metrics.json") -> None:
+    """Guarda métricas y matrices en formato JSON lines."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as file:
+        for r in results:
+            file.write(json.dumps(r) + "\n")
+
+
+
+def main() -> None:
+    """Ejecuta todo el flujo"""
+    os.makedirs("files/output", exist_ok=True)
+
+    # 1. Cargar y limpiar datos
+    df_train = clean_data(load_data("files/input/train_data.csv.zip"))
+    df_test = clean_data(load_data("files/input/test_data.csv.zip"))
+
+    # 2. Dividir en X, y
+    x_train, y_train = split(df_train)
+    x_test, y_test = split(df_test)
+
+    # 3. Pipeline
+    pipeline = build_pipeline()
+
+    # 4. GridSearch + entrenamiento
+    estimator = tune_hyperparameters(pipeline, x_train, y_train, scoring="balanced_accuracy")
+
+    # 5. Predicciones
+    y_pred_train = estimator.predict(x_train)
+    y_pred_test = estimator.predict(x_test)
+
+    # 6. Métricas
+    metrics_train = compute_metrics("train", y_train, y_pred_train)
+    metrics_test = compute_metrics("test", y_test, y_pred_test)
+
+    # 7. Matrices de confusión
+    cm_train = compute_confusion("train", y_train, y_pred_train)
+    cm_test = compute_confusion("test", y_test, y_pred_test)
+
+    # 8. Guardar métricas y modelo
+    save_metrics([metrics_train, metrics_test, cm_train, cm_test], "files/output/metrics.json")
+    save_model(estimator, "files/models/model.pkl.gz")
+
+
+if __name__ == "__main__":
+    main()
